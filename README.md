@@ -22,7 +22,9 @@ python server.py
 
 项目包含 `render.yaml`，可直接部署为 Render Web Service。提交代码到 GitHub 后，在 Render 创建 Blueprint 并选择该仓库。Render 会自动读取部署配置、提供 HTTPS 网址，并把用户数据保存到挂载磁盘。
 
-部署需要选择支持 Persistent Disk 的付费 Web Service；免费服务的文件系统会在重启或重新部署后清空，不能用于保存交易数据。部署时请保留 `COINLOG_SECURE_COOKIE=true`，数据磁盘不要写入 Git 仓库。生产环境建议定期从网站导出 CSV 作异地备份。
+部署配置使用 Render 免费 Web Service，并通过 `DATABASE_URL` 连接 Neon 免费 PostgreSQL。先创建 Neon 数据库，将数据库连接字符串作为 Render 的私密环境变量填写；不要把连接字符串上传到 GitHub。部署启动时会自动创建数据表。请保留 `COINLOG_SECURE_COOKIE=true`，并定期导出 CSV 备份。免费服务可能休眠，首次打开会有等待时间。
+
+云数据库部署先运行 `pip install -r requirements.txt` 安装 PostgreSQL 驱动。本地未设置 `DATABASE_URL` 时继续使用 `data/` 文件夹；本地数据不会自动迁移到云端，可通过 CSV 导出导入迁移交易记录。账号需在云端重新注册。
 
 ## 当前支持
 

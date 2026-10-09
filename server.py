@@ -11,8 +11,30 @@ DATA = Path(os.environ.get("COINLOG_DATA_DIR", ROOT / "data"))
 DATA.mkdir(exist_ok=True)
 SESSIONS = {}
 COOKIE = "coinlog_session"
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+def db_connection():
+    import psycopg
+    return psycopg.connect(DATABASE_URL, connect_timeout=15)
+
+def initialize_database():
+    if DATABASE_URL:
+        with db_connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS coinlog_documents (key TEXT PRIMARY KEY, value JSONB NOT NULL)")
+
+def write_json(path, value):
+    if DATABASE_URL:
+        from psycopg.types.json import Jsonb
+        with db_connection() as conn:
+            conn.execute("INSERT INTO coinlog_documents (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (path.name, Jsonb(value)))
+    else:
+        path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 def read_json(path, default):
+    if DATABASE_URL:
+        with db_connection() as conn:
+            row = conn.execute("SELECT value FROM coinlog_documents WHERE key = %s", (path.name,)).fetchone()
+            return row[0] if row else default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -92,9 +114,9 @@ class Handler(BaseHTTPRequestHandler):
                 if username in users: self.send_json({"error":"这个用户名已被使用"},409); return
                 salt = secrets.token_bytes(16)
                 users[username] = {"salt":salt.hex(), "hash":hashlib.pbkdf2_hmac("sha256",password.encode(),salt,240000).hex(), "username":username}
-                users_path.write_text(json.dumps(users),encoding="utf-8")
+                write_json(users_path, users)
                 uid = hashlib.sha256(username.encode()).hexdigest()[:24]
-                user_file(uid).write_text(json.dumps({"transactions":[]}),encoding="utf-8")
+                write_json(user_file(uid), {"transactions":[], "marks":{}})
             else:
                 u = users.get(username)
                 if not u or not hmac.compare_digest(hashlib.pbkdf2_hmac("sha256",password.encode(),bytes.fromhex(u["salt"]),240000).hex(),u["hash"]):
@@ -111,11 +133,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/data":
             tx=data.get("transactions"); marks=data.get("marks",{})
             if not isinstance(tx,list) or len(tx)>100000 or not isinstance(marks,dict): self.send_json({"error":"记录格式不正确"},400); return
-            user_file(uid).write_text(json.dumps({"transactions":tx,"marks":marks},ensure_ascii=False),encoding="utf-8")
+            write_json(user_file(uid), {"transactions":tx,"marks":marks})
             self.send_json({"ok":True}); return
         self.send_json({"error":"未找到"},404)
 
 def main():
+    initialize_database()
     host=os.environ.get("COINLOG_HOST","127.0.0.1"); port=int(os.environ.get("PORT", os.environ.get("COINLOG_PORT","8000")))
     print(f"CoinLog 正在运行: http://{host}:{port}")
     ThreadingHTTPServer((host,port),Handler).serve_forever()

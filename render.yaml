@@ -2,17 +2,14 @@ services:
   - type: web
     name: coin-log
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
     healthCheckPath: /
     envVars:
       - key: COINLOG_HOST
         value: 0.0.0.0
-      - key: COINLOG_DATA_DIR
-        value: /opt/render/project/src/data
+      - key: DATABASE_URL
+        sync: false
       - key: COINLOG_SECURE_COOKIE
         value: "true"
-    disk:
-      name: coin-log-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
