@@ -3,7 +3,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
-import hashlib, hmac, json, os, secrets, time
+import hashlib, hmac, json, os, secrets, time, math
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from threading import Lock
@@ -19,6 +19,7 @@ AI_MODEL = "XingChenAGI/Xing4.0-29B"
 AI_ENDPOINT = "https://api.siliconflow.cn/v1/chat/completions"
 AI_REQUESTS = {}
 AI_LOCK = Lock()
+DATA_LOCK = Lock()
 
 def ai_review(uid, request_path, data):
     if data.get("consent") is not True:
@@ -128,7 +129,12 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         n = int(self.headers.get("Content-Length", "0"))
         if n > 8_000_000: raise ValueError("请求内容过大")
-        return json.loads(self.rfile.read(n) or b"{}")
+        if n < 0: raise ValueError("请求长度不正确")
+        def invalid_constant(value):
+            raise ValueError("数字格式不正确")
+        data = json.loads(self.rfile.read(n) or b"{}", parse_constant=invalid_constant)
+        if not isinstance(data,dict): raise ValueError("请求必须为对象")
+        return data
 
     def current_user(self):
         raw = self.headers.get("Cookie", "")
@@ -162,7 +168,11 @@ class Handler(BaseHTTPRequestHandler):
                     target = mode_file(uid, self.path)
                 except ValueError as e:
                     self.send_json({"error":str(e)},400); return
-                self.send_json(read_json(target, {"transactions":[], "marks":{}})); return
+                with DATA_LOCK:
+                    document = read_json(target, {"transactions":[], "marks":{}})
+                document.setdefault("trash", [])
+                document.setdefault("revision", 0)
+                self.send_json(document); return
             self.send_json({"error":"未找到"}, 404); return
         target = PUBLIC / ("index.html" if path == "/" else path.lstrip("/"))
         try:
@@ -209,14 +219,31 @@ class Handler(BaseHTTPRequestHandler):
                 response, status = {"error":str(e)}, 400
             self.send_json(response,status); return
         if path == "/api/data":
-            tx=data.get("transactions"); marks=data.get("marks",{})
-            if not isinstance(tx,list) or len(tx)>100000 or not isinstance(marks,dict): self.send_json({"error":"记录格式不正确"},400); return
+            tx=data.get("transactions"); marks=data.get("marks",{}); trash=data.get("trash",[])
+            if (not isinstance(tx,list) or len(tx)>100000 or any(not isinstance(t,dict) for t in tx)
+                or not isinstance(marks,dict) or not isinstance(trash,list) or len(trash)>1000
+                or any(not isinstance(t,dict) or not isinstance(t.get("transaction"),dict)
+                       or not isinstance(t.get("deleteId"),str) for t in trash)):
+                self.send_json({"error":"记录或最近删除格式不正确"},400); return
+            try:
+                if any(not math.isfinite(float(v)) or float(v)<=0 for v in marks.values()):
+                    raise ValueError
+            except (TypeError,ValueError,OverflowError):
+                self.send_json({"error":"标记价格必须是有效正数"},400); return
             try:
                 target = mode_file(uid, self.path)
             except ValueError as e:
                 self.send_json({"error":str(e)},400); return
-            write_json(target, {"transactions":tx,"marks":marks})
-            self.send_json({"ok":True}); return
+            with DATA_LOCK:
+                current = read_json(target,{"transactions":[],"marks":{},"revision":0})
+                revision = current.get("revision",0)
+                if data.get("revision") != revision:
+                    self.send_json({"error":"记录已在另一个页面更新，请刷新后再保存；本次没有覆盖云端记录"},409); return
+                if revision and "trash" not in data:
+                    self.send_json({"error":"页面版本过旧，请刷新网站"},409); return
+                revision += 1
+                write_json(target, {"transactions":tx,"marks":marks,"trash":trash,"revision":revision})
+            self.send_json({"ok":True,"revision":revision}); return
         self.send_json({"error":"未找到"},404)
 
 def main():
