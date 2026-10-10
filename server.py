@@ -2,7 +2,7 @@
 """Small, dependency-free, multi-user crypto journal for local use or self-hosting."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import hashlib, hmac, json, os, secrets, time
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +42,12 @@ def read_json(path, default):
 
 def user_file(uid):
     return DATA / (uid + ".json")
+
+def mode_file(uid, request_path):
+    mode = parse_qs(urlparse(request_path).query).get("mode", ["crypto"])[0]
+    if mode not in ("crypto", "stocks"):
+        raise ValueError("记录模式不正确")
+    return DATA / (uid + "-stocks.json") if mode == "stocks" else user_file(uid)
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "CoinLog/0.1"
@@ -90,7 +96,11 @@ class Handler(BaseHTTPRequestHandler):
             uid = self.current_user()
             if not uid: self.send_json({"error":"请先登录"}, 401); return
             if path == "/api/data":
-                self.send_json(read_json(user_file(uid), {"transactions":[], "marks":{}})); return
+                try:
+                    target = mode_file(uid, self.path)
+                except ValueError as e:
+                    self.send_json({"error":str(e)},400); return
+                self.send_json(read_json(target, {"transactions":[], "marks":{}})); return
             self.send_json({"error":"未找到"}, 404); return
         target = PUBLIC / ("index.html" if path == "/" else path.lstrip("/"))
         try:
@@ -133,7 +143,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/data":
             tx=data.get("transactions"); marks=data.get("marks",{})
             if not isinstance(tx,list) or len(tx)>100000 or not isinstance(marks,dict): self.send_json({"error":"记录格式不正确"},400); return
-            write_json(user_file(uid), {"transactions":tx,"marks":marks})
+            try:
+                target = mode_file(uid, self.path)
+            except ValueError as e:
+                self.send_json({"error":str(e)},400); return
+            write_json(target, {"transactions":tx,"marks":marks})
             self.send_json({"ok":True}); return
         self.send_json({"error":"未找到"},404)
 
